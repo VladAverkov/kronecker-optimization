@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+results/tables/
+results/plots/
+
+.pytest_cache/
+.triton/
+
+*.pt
+*.ckpt
