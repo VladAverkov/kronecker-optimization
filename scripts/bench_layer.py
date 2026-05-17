@@ -13,18 +13,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
 
+from src.layers.full_linear import FullLinear
 from src.layers.vanilla import VanillaKroneckerLinear
 from src.layers.efficient import EfficientKroneckerLinear
 from src.benchmark.timer import benchmark_layer
 
 LAYERS = {
-    "vanilla": VanillaKroneckerLinear,
-    "efficient": EfficientKroneckerLinear,
+    "full_linear": FullLinear,
+    "kron_naive": VanillaKroneckerLinear,
+    "kron_efficient": EfficientKroneckerLinear,
 }
 
 try:
     from src.layers.triton_impl import TritonKroneckerLinear
-    LAYERS["triton"] = TritonKroneckerLinear
+    LAYERS["kron_triton"] = TritonKroneckerLinear
 except ImportError:
     pass
 

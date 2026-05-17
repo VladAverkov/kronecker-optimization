@@ -20,21 +20,36 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from src.layers.full_linear import FullLinear
 from src.layers.vanilla import VanillaKroneckerLinear
 from src.layers.efficient import EfficientKroneckerLinear
 from src.benchmark.timer import benchmark_layer
 
-
 LAYERS = {
-    "vanilla": VanillaKroneckerLinear,
-    "efficient": EfficientKroneckerLinear,
+    "full_linear": FullLinear,
+    "kron_naive": VanillaKroneckerLinear,
+    "kron_efficient": EfficientKroneckerLinear,
 }
 
 try:
     from src.layers.triton_impl import TritonKroneckerLinear
-    LAYERS["triton"] = TritonKroneckerLinear
+    LAYERS["kron_triton"] = TritonKroneckerLinear
 except ImportError:
     print("Warning: triton not available, skipping triton benchmarks")
+
+DISPLAY = {
+    "full_linear": "nn.Linear",
+    "kron_naive": "Kron (explicit W)",
+    "kron_efficient": "Kron (efficient)",
+    "kron_triton": "Kron (Triton)",
+}
+
+COLORS = {
+    "full_linear": "#7f8c8d",
+    "kron_naive": "#e74c3c",
+    "kron_efficient": "#3498db",
+    "kron_triton": "#2ecc71",
+}
 
 DIMENSIONS = [256, 512, 1024, 2048, 4096]
 N_TERMS_LIST = [1, 2, 4]
@@ -64,31 +79,34 @@ def run_benchmarks(device, warmup, repeats):
     return pd.DataFrame(records)
 
 
+def _label(key):
+    return DISPLAY.get(key, key)
+
+
 def generate_plots(df, output_dir):
     os.makedirs(f"{output_dir}/plots", exist_ok=True)
-    colors = {"vanilla": "#e74c3c", "efficient": "#3498db", "triton": "#2ecc71"}
 
     # --- Latency: one figure per n_terms, 3 subplots (fwd / bwd / fwd+bwd) ---
     for n_terms in sorted(df["n_terms"].unique()):
         sub = df[df["n_terms"] == n_terms]
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-        fig.suptitle(f"Kronecker Linear Layer Benchmark  (n_terms={n_terms})", fontsize=14)
+        fig.suptitle(f"Latency Comparison  (n_terms={n_terms})", fontsize=14)
 
-        for ax, col, label in zip(
+        for ax, col, ylabel in zip(
             axes,
             ["fwd_ms", "bwd_ms", "fwd_bwd_ms"],
             ["Forward (ms)", "Backward (ms)", "Forward + Backward (ms)"],
         ):
-            for layer_name in sub["layer"].unique():
-                ld = sub[sub["layer"] == layer_name].sort_values("dim")
+            for layer_key in sub["layer"].unique():
+                ld = sub[sub["layer"] == layer_key].sort_values("dim")
                 ax.plot(
                     ld["dim"], ld[col],
-                    marker="o", label=layer_name,
-                    color=colors.get(layer_name, None),
+                    marker="o", label=_label(layer_key),
+                    color=COLORS.get(layer_key),
                 )
             ax.set_xlabel("Dimension (in = out)")
-            ax.set_ylabel(label)
-            ax.set_title(label)
+            ax.set_ylabel(ylabel)
+            ax.set_title(ylabel)
             ax.legend()
             ax.set_xscale("log", base=2)
             ax.grid(True, alpha=0.3)
@@ -97,18 +115,18 @@ def generate_plots(df, output_dir):
         plt.savefig(f"{output_dir}/plots/latency_n_terms_{n_terms}.png", dpi=150)
         plt.close()
 
-    # --- Memory: one figure per n_terms (same layout as latency) ---
+    # --- Memory: one figure per n_terms ---
     for n_terms in sorted(df["n_terms"].unique()):
         sub = df[df["n_terms"] == n_terms]
         fig, ax = plt.subplots(figsize=(8, 5))
         fig.suptitle(f"Peak GPU Memory  (n_terms={n_terms})", fontsize=14)
 
-        for layer_name in sub["layer"].unique():
-            ld = sub[sub["layer"] == layer_name].sort_values("dim")
+        for layer_key in sub["layer"].unique():
+            ld = sub[sub["layer"] == layer_key].sort_values("dim")
             ax.plot(
                 ld["dim"], ld["peak_memory_mb"],
-                marker="o", label=layer_name,
-                color=colors.get(layer_name, None),
+                marker="o", label=_label(layer_key),
+                color=COLORS.get(layer_key),
             )
         ax.set_xlabel("Dimension (in = out)")
         ax.set_ylabel("Peak Memory (MB)")
@@ -119,36 +137,41 @@ def generate_plots(df, output_dir):
         plt.savefig(f"{output_dir}/plots/memory_n_terms_{n_terms}.png", dpi=150)
         plt.close()
 
-    # --- Params: Kronecker params per n_terms vs full linear baseline ---
-    dims = sorted(df["dim"].unique())
-    full_linear_params = [d * d for d in dims]
-
+    # --- Params: per n_terms, all layers including full linear ---
     for n_terms in sorted(df["n_terms"].unique()):
         sub = df[df["n_terms"] == n_terms]
         fig, ax = plt.subplots(figsize=(8, 5))
         fig.suptitle(f"Parameter Count  (n_terms={n_terms})", fontsize=14)
 
-        first_layer = sub["layer"].iloc[0]
-        ld = sub[sub["layer"] == first_layer].sort_values("dim")
-        ax.plot(
-            ld["dim"], ld["num_params"],
-            marker="o", color="#3498db",
-            label=f"Kronecker (n_terms={n_terms})",
-        )
-        ax.plot(
-            dims, full_linear_params,
-            marker="s", linestyle="--", color="#7f8c8d",
-            label="Full linear (dim²)",
-        )
+        plotted_kron = False
+        for layer_key in sub["layer"].unique():
+            ld = sub[sub["layer"] == layer_key].sort_values("dim")
+            if layer_key == "full_linear":
+                ax.plot(
+                    ld["dim"], ld["num_params"],
+                    marker="s", linestyle="--",
+                    label=_label(layer_key), color=COLORS.get(layer_key),
+                )
+            elif not plotted_kron:
+                # All Kronecker variants share the same param count
+                ax.plot(
+                    ld["dim"], ld["num_params"],
+                    marker="o", label=f"Kronecker (n_terms={n_terms})",
+                    color="#3498db",
+                )
+                plotted_kron = True
 
-        # Annotate compression ratio
-        for d, kp, fp in zip(ld["dim"], ld["num_params"], full_linear_params):
-            ratio = fp / kp
-            ax.annotate(
-                f"{ratio:.0f}x", (d, kp),
-                textcoords="offset points", xytext=(0, -18),
-                ha="center", fontsize=8, color="#3498db",
-            )
+                # Annotate compression ratio vs full linear
+                fl = sub[sub["layer"] == "full_linear"].sort_values("dim")
+                if not fl.empty:
+                    for d, kp, fp in zip(
+                        ld["dim"], ld["num_params"], fl["num_params"]
+                    ):
+                        ax.annotate(
+                            f"{fp / kp:.0f}x", (d, kp),
+                            textcoords="offset points", xytext=(0, -18),
+                            ha="center", fontsize=8, color="#3498db",
+                        )
 
         ax.set_xlabel("Dimension (in = out)")
         ax.set_ylabel("Parameters")
